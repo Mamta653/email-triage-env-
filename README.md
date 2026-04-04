@@ -2,12 +2,12 @@
 
 An OpenEnv environment for training AI agents to classify emails.
 
-## 🎯 What it does
+## What it does
 Simulates real-world email triage — the task of sorting
 and prioritizing emails. An AI agent reads emails and
 learns to classify them correctly.
 
-## 🏋️ Three Tasks
+##  Three Tasks
 
 | Task | Difficulty | Description | Max Score |
 |------|-----------|-------------|-----------|
