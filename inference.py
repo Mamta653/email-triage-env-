@@ -1,24 +1,31 @@
-
 import os
 import random
 from openai import OpenAI
+from email_triage_env import EmailTriageEnvironment, EmailAction
 
 # ─── ENVIRONMENT VARIABLES ───
-API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4.1-mini")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 HF_TOKEN = os.getenv("HF_TOKEN")
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 
 if HF_TOKEN is None:
     raise ValueError("HF_TOKEN environment variable is required")
 
-# ─── OPENAI CLIENT ───
-client = OpenAI(
-    base_url=API_BASE_URL,
-    api_key=HF_TOKEN
-)
+client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
 
-# ─── GET AGENT DECISION ───
-def get_agent_action(task, email_subject, email_body, email_sender):
+def log_start(task, env, model):
+    print(f"[START] task={task} env={env} model={model}", flush=True)
+
+def log_step(step, action, reward, done, error=None):
+    error_val = error if error else "null"
+    print(f"[STEP] step={step} action={action} reward={reward:.2f} done={str(done).lower()} error={error_val}", flush=True)
+
+def log_end(success, steps, score, rewards):
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}", flush=True)
+
+def get_agent_action(task, subject, body, sender):
     if task == "easy":
         choices = "spam or not_spam"
     elif task == "medium":
@@ -27,97 +34,79 @@ def get_agent_action(task, email_subject, email_body, email_sender):
         choices = "high_reply, high_delete, medium_reply, medium_archive, low_delete, or low_archive"
 
     prompt = f"""You are an email classification agent.
-
 Email:
-From: {email_sender}
-Subject: {email_subject}
-Body: {email_body}
-
+From: {sender}
+Subject: {subject}
+Body: {body}
 Task: {task}
 Your choices: {choices}
-
-Reply with ONLY one of the choices above. Nothing else."""
+Reply with ONLY one choice. Nothing else."""
 
     try:
         response = client.chat.completions.create(
             model=MODEL_NAME,
-            messages=[
-                {"role": "user", "content": prompt}
-            ],
+            messages=[{"role": "user", "content": prompt}],
             max_tokens=10
         )
         return response.choices[0].message.content.strip().lower()
     except Exception as e:
-        # Fallback to random if API fails
+        print(f"[DEBUG] Model failed: {e}", flush=True)
         if task == "easy":
             return random.choice(["spam", "not_spam"])
         elif task == "medium":
-            return random.choice(["spam", "work", "finance",
-                                 "personal", "emergency"])
+            return random.choice(["spam", "work", "finance", "personal", "emergency"])
         else:
-            return random.choice(["high_reply", "low_delete",
-                                 "medium_reply"])
+            return random.choice(["high_reply", "low_delete", "medium_reply"])
 
-# ─── RUN ONE EPISODE ───
-def run_episode(env, task, model_name):
+def run_episode(env, task):
     rewards = []
-    last_error = None
+    steps_taken = 0
+    score = 0.0
+    success = False
 
-    # START
     obs = env.reset(task=task)
-    print(f"[START] task={task} env=email-triage model={model_name}")
+    log_start(task=task, env="email-triage", model=MODEL_NAME)
 
-    step = 0
-    done = False
+    try:
+        step = 0
+        done = False
+        while not done:
+            step += 1
+            try:
+                action_label = get_agent_action(
+                    task=task,
+                    subject=obs.subject,
+                    body=obs.body,
+                    sender=obs.sender
+                )
+                action = EmailAction(task=task, label=action_label)
+                result = env.step(action)
+                reward = result.reward if result.reward else 0.0
+                done = result.done
+                rewards.append(reward)
+                steps_taken = step
+                obs = result
+                log_step(step=step, action=action_label, reward=reward, done=done)
+            except Exception as e:
+                done = True
+                rewards.append(0.0)
+                steps_taken = step
+                log_step(step=step, action="null", reward=0.0, done=True, error=str(e))
 
-    while not done:
-        step += 1
+        score = sum(rewards)/len(rewards) if rewards else 0.0
+        score = min(max(score, 0.0), 1.0)
+        success = score > 0.0
 
-        try:
-            # Get agent decision
-            action_label = get_agent_action(
-                task=task,
-                email_subject=obs.subject,
-                email_body=obs.body,
-                email_sender=obs.sender
-            )
-
-            # Take action
-            action = EmailAction(task=task, label=action_label)
-            result = env.step(action)
-
-            reward = result.reward if result.reward else 0.0
-            done = result.done
-            rewards.append(reward)
-            last_error = None
-
-            # STEP output
-            print(f"[STEP] step={step} action={action_label} reward={reward:.2f} done={str(done).lower()} error=null")
-
-            obs = result
-
-        except Exception as e:
-            last_error = str(e)
-            done = True
-            rewards.append(0.0)
-            print(f"[STEP] step={step} action=null reward=0.00 done=true error={last_error}")
-
-    # END
-    success = any(r > 0 for r in rewards)
-    rewards_str = ",".join([f"{r:.2f}" for r in rewards])
-    print(f"[END] success={str(success).lower()} steps={step} rewards={rewards_str}")
+    finally:
+        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
     return rewards
 
-# ─── MAIN ───
 def main():
     env = EmailTriageEnvironment()
-
     for task in ["easy", "medium", "hard"]:
-        print(f"\n{'='*50}")
-        rewards = run_episode(env, task, MODEL_NAME)
-        avg = sum(rewards) / len(rewards) if rewards else 0
-        print(f"Average reward: {avg:.2f}")
+        print(f"\n--- Task: {task.upper()} ---")
+        run_episode(env, task)
 
 if __name__ == "__main__":
     main()
