@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "email-triage-env"
+version = "1.0.0"
+description = "OpenEnv environment for email triage classification"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Mamta", email = "mamttta226@gmail.com"}
+]
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "pydantic",
+    "python-multipart",
+    "openai",
+]
+
+[tool.openenv]
+name = "email-triage-env"
+version = "1.0.0"
+tasks = ["easy", "medium", "hard"]
