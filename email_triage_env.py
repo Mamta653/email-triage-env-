@@ -1,4 +1,3 @@
-
 import random
 import uuid
 from typing import Optional
@@ -82,9 +81,9 @@ class EmailTriageEnvironment:
         else:
             reward = self._grade_hard(action.label)
         self._done = True
-        if reward == 1.0:
+        if reward >= 0.8:
             message = "Correct! Great job!"
-        elif reward == 0.5:
+        elif reward >= 0.5:
             message = "Partially correct!"
         else:
             message = f"Wrong! Answer was: {self._current_email['correct_label']}"
@@ -116,32 +115,36 @@ class EmailTriageEnvironment:
             return "Give priority_action e.g. high_reply, low_delete"
 
     def _grade_easy(self, label):
-    correct = self._current_email["correct_label"]
-    is_spam = correct == "spam"
-    agent_says_spam = label == "spam"
-    # Changed from 1.0/0.0 to 0.9/0.1
-    return 0.9 if is_spam == agent_says_spam else 0.1
+        correct = self._current_email["correct_label"]
+        is_spam = correct == "spam"
+        agent_says_spam = label == "spam"
+        # Scores strictly between 0 and 1
+        return 0.9 if is_spam == agent_says_spam else 0.1
 
-def _grade_medium(self, label):
-    correct = self._current_email["correct_label"]
-    # Changed from 1.0/0.0 to 0.9/0.1
-    return 0.9 if label == correct else 0.1
+    def _grade_medium(self, label):
+        correct = self._current_email["correct_label"]
+        # Scores strictly between 0 and 1
+        return 0.9 if label == correct else 0.1
 
-def _grade_hard(self, label):
-    correct = self._current_email["correct_label"]
-    score = 0.1  # base score
-    if correct == "emergency" and "high" in label:
-        score += 0.4
-    elif correct == "work" and "medium" in label:
-        score += 0.4
-    elif correct in ["spam", "personal"] and "low" in label:
-        score += 0.4
-    if correct == "spam" and "delete" in label:
-        score += 0.4
-    elif correct == "emergency" and "reply" in label:
-        score += 0.4
-    elif correct == "work" and "reply" in label:
-        score += 0.4
-    elif correct == "finance" and "archive" in label:
-        score += 0.4
-    return min(score, 0.9)  
+    def _grade_hard(self, label):
+        correct = self._current_email["correct_label"]
+        score = 0.15  # base score > 0.0
+
+        if correct == "emergency" and "high" in label:
+            score += 0.35
+        elif correct == "work" and "medium" in label:
+            score += 0.35
+        elif correct in ["spam", "personal"] and "low" in label:
+            score += 0.35
+
+        if correct == "spam" and "delete" in label:
+            score += 0.35
+        elif correct == "emergency" and "reply" in label:
+            score += 0.35
+        elif correct == "work" and "reply" in label:
+            score += 0.35
+        elif correct == "finance" and "archive" in label:
+            score += 0.35
+
+        # Clamp strictly between 0 and 1
+        return min(score, 0.85)
