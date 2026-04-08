@@ -116,30 +116,32 @@ class EmailTriageEnvironment:
             return "Give priority_action e.g. high_reply, low_delete"
 
     def _grade_easy(self, label):
-        correct = self._current_email["correct_label"]
-        is_spam = correct == "spam"
-        agent_says_spam = label == "spam"
-        return 1.0 if is_spam == agent_says_spam else 0.0
+    correct = self._current_email["correct_label"]
+    is_spam = correct == "spam"
+    agent_says_spam = label == "spam"
+    # Changed from 1.0/0.0 to 0.9/0.1
+    return 0.9 if is_spam == agent_says_spam else 0.1
 
-    def _grade_medium(self, label):
-        correct = self._current_email["correct_label"]
-        return 1.0 if label == correct else 0.0
+def _grade_medium(self, label):
+    correct = self._current_email["correct_label"]
+    # Changed from 1.0/0.0 to 0.9/0.1
+    return 0.9 if label == correct else 0.1
 
-    def _grade_hard(self, label):
-        correct = self._current_email["correct_label"]
-        score = 0.0
-        if correct == "emergency" and "high" in label:
-            score += 0.5
-        elif correct == "work" and "medium" in label:
-            score += 0.5
-        elif correct in ["spam", "personal"] and "low" in label:
-            score += 0.5
-        if correct == "spam" and "delete" in label:
-            score += 0.5
-        elif correct == "emergency" and "reply" in label:
-            score += 0.5
-        elif correct == "work" and "reply" in label:
-            score += 0.5
-        elif correct == "finance" and "archive" in label:
-            score += 0.5
-        return score
+def _grade_hard(self, label):
+    correct = self._current_email["correct_label"]
+    score = 0.1  # base score
+    if correct == "emergency" and "high" in label:
+        score += 0.4
+    elif correct == "work" and "medium" in label:
+        score += 0.4
+    elif correct in ["spam", "personal"] and "low" in label:
+        score += 0.4
+    if correct == "spam" and "delete" in label:
+        score += 0.4
+    elif correct == "emergency" and "reply" in label:
+        score += 0.4
+    elif correct == "work" and "reply" in label:
+        score += 0.4
+    elif correct == "finance" and "archive" in label:
+        score += 0.4
+    return min(score, 0.9)  
