@@ -1,204 +1,136 @@
-import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 import random
-import uvicorn
+from openai import OpenAI
+from email_triage_env import EmailTriageEnvironment, EmailAction
 
-from email_triage_env import (
-    EmailTriageEnvironment,
-    EmailAction,
-    INBOX_SIZE,
-    EMAIL_TEMPLATES,
-)
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
+API_KEY = os.getenv("API_KEY") or os.getenv("HF_TOKEN")
 
-app = FastAPI(
-    title="Email Triage RL Environment",
-    description=(
-        "A multi-step OpenEnv-compatible reinforcement learning environment "
-        "for intelligent email inbox triage. An agent receives a realistic inbox "
-        "of 5 emails per episode and must classify and prioritise each one. "
-        "Tasks range from binary spam detection (easy) to full priority-action "
-        "decisions with urgency-aware reward shaping (hard)."
-    ),
-    version="2.0.0",
-)
+if API_KEY is None:
+    raise ValueError("API_KEY or HF_TOKEN environment variable is required")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-env = EmailTriageEnvironment()
+client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
 
-# ─── HEALTH ───
-
-@app.get("/health")
-def health():
-    return {"status": "healthy", "version": "2.0.0", "inbox_size": INBOX_SIZE}
+def log_start(task, env_name, model):
+    print(f"[START] task={task} env={env_name} model={model}", flush=True)
 
 
-# ─── CORE OPENENV ENDPOINTS ───
-
-@app.post("/reset")
-def reset(task: str = "easy"):
-    if task not in ["easy", "medium", "hard"]:
-        raise HTTPException(status_code=400, detail="task must be easy, medium, or hard")
-    obs = env.reset(task=task)
-    return obs.dict()
+def log_step(step, action, reward, done, error=None):
+    error_val = error if error else "null"
+    print(f"[STEP] step={step} action={action} reward={reward:.4f} done={str(done).lower()} error={error_val}", flush=True)
 
 
-@app.post("/step")
-def step(action: EmailAction):
-    if env._done:
-        raise HTTPException(
-            status_code=400,
-            detail="Episode is done. Call POST /reset to start a new episode."
+def log_end(success, steps, score, rewards):
+    rewards_str = ",".join(f"{r:.4f}" for r in rewards)
+    print(f"[END] success={str(success).lower()} steps={steps} score={score:.4f} rewards={rewards_str}", flush=True)
+
+
+def get_agent_action(task, subject, body, sender, urgency, email_index, inbox_size, pending_urgent):
+    if task == "easy":
+        choices = "spam or not_spam"
+        extra = ""
+    elif task == "medium":
+        choices = "spam, work, finance, personal, or emergency"
+        extra = "Note: if it looks like an emergency/critical alert, use 'emergency'."
+    else:
+        choices = ("high_reply, high_escalate, high_delete, "
+                   "medium_reply, medium_forward, medium_archive, "
+                   "low_archive, low_delete, low_ignore")
+        extra = (
+            "Priority guide: high=emergency/critical, medium=work/finance, low=spam/personal. "
+            "Action guide: reply=needs response, escalate=needs escalation, "
+            "delete=discard, forward=send to someone else, archive=save for later, ignore=skip."
         )
-    result = env.step(action)
-    return result.dict()
+
+    prompt = f"""You are an intelligent email triage agent managing a work inbox.
+
+Email {email_index + 1} of {inbox_size}:
+From: {sender}
+Subject: {subject}
+Body: {body}
+Urgency signal: {urgency}
+Pending urgent emails: {pending_urgent}
+
+Task: {task}
+Your choices: {choices}
+{extra}
+
+Reply with ONLY one choice from the list. No explanation."""
+
+    try:
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=15,
+        )
+        return response.choices[0].message.content.strip().lower().split()[0]
+    except Exception as e:
+        print(f"[DEBUG] Model call failed: {e}", flush=True)
+        if task == "easy":
+            return random.choice(["spam", "not_spam"])
+        elif task == "medium":
+            return random.choice(["spam", "work", "finance", "personal", "emergency"])
+        else:
+            return random.choice(["high_reply", "medium_archive", "low_delete"])
 
 
-@app.get("/state")
-def get_state():
-    return env.state().dict()
+def run_episode(env, task):
+    obs = env.reset(task=task)
+    log_start(task=task, env_name="email-triage", model=MODEL_NAME)
+
+    rewards = []
+    steps_taken = 0
+    success = False
+
+    try:
+        while not obs.done:
+            step = obs.email_index + 1
+            try:
+                action_label = get_agent_action(
+                    task=task,
+                    subject=obs.subject,
+                    body=obs.body,
+                    sender=obs.sender,
+                    urgency=obs.urgency,
+                    email_index=obs.email_index,
+                    inbox_size=obs.inbox_size,
+                    pending_urgent=obs.pending_urgent,
+                )
+                action = EmailAction(task=task, label=action_label)
+                obs = env.step(action)
+                reward = obs.reward if obs.reward is not None else 0.15
+                rewards.append(reward)
+                steps_taken = step
+                log_step(step=step, action=action_label, reward=reward, done=obs.done)
+            except Exception as e:
+                obs_reward = 0.15
+                rewards.append(obs_reward)
+                steps_taken = step
+                log_step(step=step, action="null", reward=obs_reward, done=True, error=str(e))
+                break
+
+        score = sum(rewards) / len(rewards) if rewards else 0.15
+        score = round(min(max(score, 0.05), 0.95), 4)
+        success = score > 0.5
+
+    finally:
+        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+
+    return rewards
 
 
-# ─── TASK METADATA ───
-
-@app.get("/tasks")
-def get_tasks():
-    return {
-        "environment": "Email Triage RL Environment",
-        "description": (
-            f"Each episode presents an inbox of {INBOX_SIZE} emails. "
-            "The agent must triage each email one at a time."
-        ),
-        "tasks": [
-            {
-                "id": "easy",
-                "name": "Spam Detection",
-                "description": f"For each of {INBOX_SIZE} emails, decide: spam or not_spam",
-                "difficulty": "easy",
-                "steps_per_episode": INBOX_SIZE,
-                "actions": ["spam", "not_spam"],
-                "reward_range": "(0.1, 0.9)",
-                "scoring": "0.9 = correct, 0.1 = wrong",
-            },
-            {
-                "id": "medium",
-                "name": "Email Category Classification",
-                "description": f"Classify each of {INBOX_SIZE} emails into the correct category",
-                "difficulty": "medium",
-                "steps_per_episode": INBOX_SIZE,
-                "actions": ["spam", "work", "finance", "personal", "emergency"],
-                "reward_range": "(0.05, 0.95)",
-                "scoring": (
-                    "0.95 = emergency correct, 0.85 = correct, "
-                    "0.45 = near miss, 0.05 = missed emergency, 0.1 = wrong"
-                ),
-            },
-            {
-                "id": "hard",
-                "name": "Priority and Action Decision",
-                "description": (
-                    f"For each of {INBOX_SIZE} emails, assign a combined "
-                    "priority_action decision"
-                ),
-                "difficulty": "hard",
-                "steps_per_episode": INBOX_SIZE,
-                "actions": [
-                    "high_reply", "high_escalate", "high_delete",
-                    "medium_reply", "medium_forward", "medium_archive",
-                    "low_archive", "low_delete", "low_ignore",
-                ],
-                "reward_range": "(0.05, 0.95)",
-                "scoring": (
-                    "Partial credit for priority (0.45) + action (0.4) + base (0.1). "
-                    "Emergency mishandled is capped at 0.25."
-                ),
-            },
-        ],
-    }
-
-
-# ─── DATASET INFO ───
-
-@app.get("/dataset")
-def get_dataset():
-    from collections import Counter
-    label_counts = Counter(e["label"] for e in EMAIL_TEMPLATES)
-    urgency_counts = Counter(e["urgency"] for e in EMAIL_TEMPLATES)
-    return {
-        "total_email_templates": len(EMAIL_TEMPLATES),
-        "inbox_size_per_episode": INBOX_SIZE,
-        "label_distribution": dict(label_counts),
-        "urgency_distribution": dict(urgency_counts),
-        "categories": ["spam", "work", "finance", "personal", "emergency"],
-    }
-
-
-# ─── BASELINE ───
-
-@app.get("/baseline")
-def baseline():
-    """Run a random agent for 10 episodes per task to establish baselines."""
-    results = {}
-    test_env = EmailTriageEnvironment()
-
+def main():
+    env = EmailTriageEnvironment()
     for task in ["easy", "medium", "hard"]:
-        episode_scores = []
-
-        for _ in range(10):
-            obs = test_env.reset(task=task)
-            episode_reward = 0.0
-
-            while not obs.done:
-                if task == "easy":
-                    label = random.choice(["spam", "not_spam"])
-                elif task == "medium":
-                    label = random.choice(["spam", "work", "finance", "personal", "emergency"])
-                else:
-                    label = random.choice([
-                        "high_reply", "high_escalate", "high_delete",
-                        "medium_reply", "medium_forward", "medium_archive",
-                        "low_archive", "low_delete", "low_ignore",
-                    ])
-                obs = test_env.step(EmailAction(task=task, label=label))
-                if obs.reward:
-                    episode_reward += obs.reward
-
-            episode_scores.append(round(episode_reward / INBOX_SIZE, 4))
-
-        results[task] = {
-            "average_episode_score": round(sum(episode_scores) / len(episode_scores), 4),
-            "episode_scores": episode_scores,
-        }
-
-    return {"random_agent_baseline": results}
-
-
-# ─── GRADER INFO ───
-
-@app.get("/grader")
-def grader():
-    return {
-        "episode_id": env._episode_id,
-        "task_level": env._task_level,
-        "step_count": env._step_count,
-        "emails_handled": env._current_index,
-        "inbox_size": INBOX_SIZE,
-        "done": env._done,
-        "cumulative_reward": round(env._cumulative_reward, 4),
-        "urgent_handled_correctly": env._urgent_handled_correctly,
-        "urgent_missed": env._urgent_missed,
-    }
+        print(f"\n{'='*50}")
+        print(f"Task: {task.upper()}")
+        print(f"{'='*50}")
+        rewards = run_episode(env, task)
+        avg = sum(rewards) / len(rewards) if rewards else 0
+        print(f"Episode complete. Avg reward: {avg:.4f}")
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=7860)
+    main()
