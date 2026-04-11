@@ -1,50 +1,90 @@
 name: email-triage-env
-version: "1.0.0"
+version: "2.0.0"
 description: >
-  An OpenEnv environment for training AI agents
-  to classify and triage emails in real-world settings.
-
+  A multi-step OpenEnv reinforcement learning environment where an agent
+  triages a realistic inbox of 5 emails per episode. Tasks range from
+  binary spam detection to urgency-aware priority-action decisions.
+  Features shaped rewards, emergency penalty logic, and rich episode state.
 author: Mamta
 tags:
   - openenv
   - email
   - classification
-  - real-world
+  - triage
+  - multi-step
   - nlp
+  - real-world
+  - rl
 
 tasks:
   - id: easy
     name: Spam Detection
     difficulty: easy
-    description: Classify email as spam or not_spam
+    description: >
+      For each of 5 emails in the inbox, classify as spam or not_spam.
+      Simple binary decision per step.
 
   - id: medium
-    name: Email Category
+    name: Email Category Classification
     difficulty: medium
-    description: Classify into spam/work/finance/personal/emergency
+    description: >
+      For each of 5 emails, classify into one of 5 categories:
+      spam, work, finance, personal, or emergency.
+      Emergency emails give bonus reward when caught correctly (0.95)
+      and heavy penalty when missed (0.05).
 
   - id: hard
-    name: Priority and Action
+    name: Priority and Action Decision
     difficulty: hard
-    description: Assign priority and action e.g. high_reply, low_delete
+    description: >
+      For each of 5 emails, assign a combined priority_action decision.
+      Priority levels: high, medium, low.
+      Actions: reply, escalate, delete, forward, archive, ignore.
+      Two-component reward: priority score (0.45) + action score (0.4) + base (0.1).
+      Emergency mishandled is capped at 0.25.
 
 action_space:
   type: categorical
-  easy: [spam, not_spam]
-  medium: [spam, work, finance, personal, emergency]
-  hard: [high_reply, high_delete, medium_reply,
-         medium_archive, low_delete, low_archive]
+  easy:
+    - spam
+    - not_spam
+  medium:
+    - spam
+    - work
+    - finance
+    - personal
+    - emergency
+  hard:
+    - high_reply
+    - high_escalate
+    - high_delete
+    - medium_reply
+    - medium_forward
+    - medium_archive
+    - low_archive
+    - low_delete
+    - low_ignore
 
 observation_space:
   subject: string
   body: string
   sender: string
+  urgency: string         # low / medium / high
   task: string
-  message: string
+  email_index: integer    # 0-based index of current email in inbox
+  inbox_size: integer     # total emails in this episode (5)
+  emails_remaining: integer
+  pending_urgent: integer # count of unhandled emergency emails
+  message: string         # feedback from last step
   done: boolean
   reward: float
+  cumulative_reward: float
 
-reward_range: [0.0, 1.0]
+reward_range: [0.05, 0.95]  # strictly between 0 and 1
+
+episodes:
+  steps_per_episode: 5      # one step per email in inbox
+  inbox_size: 5
 
 hardware:
   cpu: 2
@@ -58,3 +98,4 @@ endpoints:
   - /tasks
   - /grader
   - /baseline
+  - /dataset
